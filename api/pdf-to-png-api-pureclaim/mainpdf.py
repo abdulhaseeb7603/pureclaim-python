@@ -1,3 +1,6 @@
+import nest_asyncio
+nest_asyncio.apply()  # Allow nested async event loops
+
 import os
 import requests
 from fastapi import FastAPI, HTTPException
