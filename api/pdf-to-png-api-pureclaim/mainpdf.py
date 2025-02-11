@@ -3,10 +3,14 @@ nest_asyncio.apply()  # Allow nested async event loops
 
 import os
 import requests
+import io
+import base64
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from llama_parse import LlamaParse
 from dotenv import load_dotenv
+from PIL import Image
+import fitz  # PyMuPDF
 
 # Load environment variables
 load_dotenv()
@@ -22,17 +26,19 @@ if not api_key:
 # Define the request model
 class PDFRequest(BaseModel):
     pdf_url: str
+    zoom: int = 2  # Default zoom level for PNG conversion
 
-# Define the PDF parsing function
-def parse_pdf_to_markdown(pdf_url: str) -> list:
+# Define the PDF processing function (parsing and conversion)
+def process_pdf(pdf_url: str, zoom: int) -> dict:
     """
-    Downloads a PDF from the provided URL and parses it into clean Markdown.
+    Downloads a PDF from the provided URL, parses it into clean Markdown, and converts it to PNG images.
 
     Args:
-        pdf_url (str): URL of the PDF to be parsed.
+        pdf_url (str): URL of the PDF to be processed.
+        zoom (int): Zoom level for PNG conversion.
 
     Returns:
-        list: A list of Markdown strings, each representing a page from the PDF.
+        dict: A dictionary containing markdown pages and PNG images.
     """
     # Download the PDF from the provided URL
     response = requests.get(pdf_url)
@@ -44,7 +50,7 @@ def parse_pdf_to_markdown(pdf_url: str) -> list:
     with open(temp_pdf_path, "wb") as f:
         f.write(response.content)
 
-    # Define content guideline instructions to guide markdown formatting.
+    # Initialize LlamaParse with premium mode enabled for Markdown conversion.
     content_guideline_instruction = """
     You are a highly proficient document parser.
     Convert each page of the PDF into clean markdown suitable for large language model processing.
@@ -52,8 +58,7 @@ def parse_pdf_to_markdown(pdf_url: str) -> list:
     Preserve the logical structure and hierarchy of the content, using appropriate Markdown syntax for headings, lists, and emphasis.
     Ensure that tables are accurately represented in Markdown format.
     """
-
-    # Initialize LlamaParse with premium mode enabled.
+    
     parser = LlamaParse(
         premium_mode=True,
         api_key=api_key,
@@ -69,76 +74,53 @@ def parse_pdf_to_markdown(pdf_url: str) -> list:
         result_type="markdown"
     )
 
-    # Process the PDF file.
+    # Process the PDF file for Markdown
     json_result = parser.get_json_result(temp_pdf_path)
     markdown_pages = json_result[0]["pages"]
 
-    # Remove the temporary file.
-    os.remove(temp_pdf_path)
-    return markdown_pages
-
-# Define the new endpoint
-@app.post("/parse-pdf-to-markdown/")
-async def parse_pdf(request: PDFRequest):
-    try:
-        markdown_pages = parse_pdf_to_markdown(request.pdf_url)
-        return {"message": "Parsing successful", "markdown_pages": markdown_pages}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Existing endpoint for PDF to PNG conversion
-class PDFToPNGRequest(BaseModel):
-    pdf_url: str
-    zoom: int = 2  # Default zoom level
-
-@app.post("/convert-pdf-to-png/")
-async def convert_pdf_to_png(request: PDFToPNGRequest):
-    pdf_url = request.pdf_url
-    zoom = request.zoom
-
-    # Validate zoom level
-    if zoom < 1 or zoom > 10:
-        raise HTTPException(status_code=400, detail="Zoom level must be between 1 and 10.")
-
-    # Download PDF if URL is provided
-    response = requests.get(pdf_url)
-    if response.status_code != 200:
-        raise HTTPException(status_code=400, detail="Failed to download the PDF. Please check the URL.")
-
+    # Convert PDF to PNG images
     pdf_data = io.BytesIO(response.content)
+    doc = fitz.open(stream=pdf_data, filetype="pdf")
+    mat = fitz.Matrix(zoom, zoom)
+    base64_images = []
 
+    # Loop through all pages to generate PNG images
+    for page_num, page in enumerate(doc):
+        pix = page.get_pixmap(matrix=mat)
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        
+        # Convert to base64
+        img_buffer = io.BytesIO()
+        img.save(img_buffer, format='PNG')
+        img_buffer.seek(0)
+        base64_string = base64.b64encode(img_buffer.getvalue()).decode()
+        
+        # Create data URL
+        data_url = f"data:image/png;base64,{base64_string}"
+        base64_images.append({
+            "page_number": page_num + 1,
+            "data_url": data_url
+        })
+
+    # Remove the temporary file
+    os.remove(temp_pdf_path)
+
+    return {
+        "message": "Processing successful",
+        "markdown_pages": markdown_pages,
+        "images": base64_images
+    }
+
+# Define the new combined endpoint
+@app.post("/process-pdf/")
+async def process_pdf_endpoint(request: PDFRequest):
     try:
-        # Open the PDF document
-        doc = fitz.open(stream=pdf_data, filetype="pdf")
-        mat = fitz.Matrix(zoom, zoom)
-        base64_images = []
-
-        # Loop through all pages
-        for page_num, page in enumerate(doc):
-            pix = page.get_pixmap(matrix=mat)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            
-            # Convert to base64
-            img_buffer = io.BytesIO()
-            img.save(img_buffer, format='PNG')
-            img_buffer.seek(0)
-            base64_string = base64.b64encode(img_buffer.getvalue()).decode()
-            
-            # Create data URL
-            data_url = f"data:image/png;base64,{base64_string}"
-            base64_images.append({
-                "page_number": page_num + 1,
-                "data_url": data_url
-            })
-
-        return {
-            "message": "Conversion successful",
-            "images": base64_images
-        }
-
+        result = process_pdf(request.pdf_url, request.zoom)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Run the app with uvicorn (for local development)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
