@@ -1,6 +1,3 @@
-import nest_asyncio
-nest_asyncio.apply()  # Allow nested async event loops
-
 import os
 import requests
 from fastapi import FastAPI, HTTPException
@@ -39,7 +36,8 @@ def parse_pdf_to_markdown(pdf_url: str) -> list:
     if response.status_code != 200:
         raise Exception(f"Failed to download PDF. Status code: {response.status_code}")
     
-    temp_pdf_path = "temp.pdf"
+    # Define the path to the temporary file in the /tmp directory
+    temp_pdf_path = "/tmp/temp.pdf"
     with open(temp_pdf_path, "wb") as f:
         f.write(response.content)
 
