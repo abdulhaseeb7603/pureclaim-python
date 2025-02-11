@@ -1,0 +1,15 @@
+{
+    "version": 2,
+    "builds": [
+      {
+        "src": "api/pdf-to-png-api-pureclaim/mainpdf.py",
+        "use": "@vercel/python"
+      }
+    ],
+    "routes": [
+      {
+        "src": "/(.*)",
+        "dest": "api/pdf-to-png-api-pureclaim/mainpdf.py"
+      }
+    ]
+  }
