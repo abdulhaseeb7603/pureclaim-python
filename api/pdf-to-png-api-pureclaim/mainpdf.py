@@ -1,21 +1,97 @@
+import nest_asyncio
+nest_asyncio.apply()  # Allow nested async event loops
+
 import os
-import io
-import base64
 import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from colorama import Fore, Style
-import fitz  # PyMuPDF
-from PIL import Image
+from llama_parse import LlamaParse
+from dotenv import load_dotenv
 
+# Load environment variables
+load_dotenv()
+
+# Initialize FastAPI app
 app = FastAPI()
 
+# Retrieve the LlamaParse API key from environment variables
+api_key = os.getenv("LLAMA_CLOUD_API_KEY")
+if not api_key:
+    raise Exception("LLAMA_CLOUD_API_KEY environment variable not set.")
+
+# Define the request model
 class PDFRequest(BaseModel):
+    pdf_url: str
+
+# Define the PDF parsing function
+def parse_pdf_to_markdown(pdf_url: str) -> list:
+    """
+    Downloads a PDF from the provided URL and parses it into clean Markdown.
+
+    Args:
+        pdf_url (str): URL of the PDF to be parsed.
+
+    Returns:
+        list: A list of Markdown strings, each representing a page from the PDF.
+    """
+    # Download the PDF from the provided URL
+    response = requests.get(pdf_url)
+    if response.status_code != 200:
+        raise Exception(f"Failed to download PDF. Status code: {response.status_code}")
+    
+    temp_pdf_path = "temp.pdf"
+    with open(temp_pdf_path, "wb") as f:
+        f.write(response.content)
+
+    # Define content guideline instructions to guide markdown formatting.
+    content_guideline_instruction = """
+    You are a highly proficient document parser.
+    Convert each page of the PDF into clean markdown suitable for large language model processing.
+    Exclude any non-essential elements such as headers, footers, page numbers, and decorative images.
+    Preserve the logical structure and hierarchy of the content, using appropriate Markdown syntax for headings, lists, and emphasis.
+    Ensure that tables are accurately represented in Markdown format.
+    """
+
+    # Initialize LlamaParse with premium mode enabled.
+    parser = LlamaParse(
+        premium_mode=True,
+        api_key=api_key,
+        verbose=True,
+        ignore_errors=False,
+        invalidate_cache=True,
+        do_not_cache=True,
+        content_guideline_instruction=content_guideline_instruction,
+        skip_diagonal_text=True,
+        disable_ocr=True,
+        do_not_unroll_columns=True,
+        page_separator="",  # Remove page separators for continuous text
+        result_type="markdown"
+    )
+
+    # Process the PDF file.
+    json_result = parser.get_json_result(temp_pdf_path)
+    markdown_pages = json_result[0]["pages"]
+
+    # Remove the temporary file.
+    os.remove(temp_pdf_path)
+    return markdown_pages
+
+# Define the new endpoint
+@app.post("/parse-pdf-to-markdown/")
+async def parse_pdf(request: PDFRequest):
+    try:
+        markdown_pages = parse_pdf_to_markdown(request.pdf_url)
+        return {"message": "Parsing successful", "markdown_pages": markdown_pages}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Existing endpoint for PDF to PNG conversion
+class PDFToPNGRequest(BaseModel):
     pdf_url: str
     zoom: int = 2  # Default zoom level
 
 @app.post("/convert-pdf-to-png/")
-async def convert_pdf_to_png(request: PDFRequest):
+async def convert_pdf_to_png(request: PDFToPNGRequest):
     pdf_url = request.pdf_url
     zoom = request.zoom
 
